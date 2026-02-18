@@ -1,171 +1,193 @@
 <!doctype html>
-<html>
+<html lang="ja">
 <head>
 <meta charset="utf-8">
-<title>VEGAS WEB SAFE v3</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VEGAS 主力AT特化 予想ツール</title>
 <style>
 body{font-family:sans-serif;margin:20px}
-textarea{width:100%;height:150px;margin:10px 0;padding:10px}
 button{padding:10px;margin:5px 0}
-pre{background:#f5f5f5;padding:10px;white-space:pre-wrap}
+table{border-collapse:collapse;width:100%;margin-top:10px}
+th,td{border:1px solid #ccc;padding:6px;font-size:12px}
 .big{font-size:20px;font-weight:bold}
+pre{background:#f5f5f5;padding:10px;white-space:pre-wrap}
 .ok{color:#2e7d32;font-weight:bold}
 .ng{color:#c62828;font-weight:bold}
 </style>
 </head>
 <body>
 
-<h2>VEGAS WEB SAFE v3（強化版）</h2>
+<h2>VEGAS 主力AT特化 予想ツール</h2>
 
-<p>前日データ</p>
-<textarea id="yData"></textarea>
+<p>前日CSV</p>
+<input type="file" id="yFile" accept=".csv">
 <button onclick="makePrediction()">予想作成</button>
 
 <hr>
 
-<p>当日データ</p>
-<textarea id="tData"></textarea>
+<p>当日CSV（検証用）</p>
+<input type="file" id="tFile" accept=".csv">
 <button onclick="evaluate()">検証</button>
 
 <hr>
 
 <div id="result" class="big"></div>
+<div id="predOut"></div>
 <pre id="debug"></pre>
-<pre id="output"></pre>
+<pre id="evalOut"></pre>
 
 <script>
 
-let prediction=[];
+const MAIN_AT = [
+"モンキーターンV",
+"東京喰種",
+"甲鉄城のカバネリ",
+"スマスロ北斗の拳",
+"新鬼武者"
+];
 
-function cleanText(text){
-  return text
-    .replace(/^\uFEFF/, "") // BOM削除
-    .replace(/"/g, "")       // ダブルクォーテーション削除
-    .replace(/\r/g,"");
-}
+let prediction = [];
+let yesterdayData = [];
 
-function detectDelimiter(text){
-  if(text.includes("\t")) return "\t";
-  return ",";
-}
-
-function splitLines(text){
-  return text.split("\n").filter(l=>l.trim().length>0);
-}
-
-function parseTable(text){
-  text=cleanText(text);
-  const lines=splitLines(text);
-  if(!lines.length) return {header:[],rows:[]};
-
-  const delim=detectDelimiter(text);
-  const rows=lines.map(l=>l.split(delim).map(c=>c.trim()));
-  const header=rows[0];
-  const body=rows.slice(1);
-
-  return {header,rows:body,delim};
-}
-
-function findCol(header,words){
-  for(let i=0;i<header.length;i++){
-    for(const w of words){
-      if(header[i].includes(w)) return i;
-    }
-  }
-  return -1;
+function parseCSV(text){
+  text = text.replace(/^\uFEFF/, "").replace(/\r/g,"");
+  const lines = text.split("\n").filter(l=>l.trim());
+  const delim = text.includes("\t") ? "\t" : ",";
+  const rows = lines.map(l=>l.replace(/"/g,"").split(delim));
+  return rows;
 }
 
 function toNum(v){
-  const s=String(v||"").replace(/,/g,"").trim();
+  const s = String(v||"").replace(/,/g,"").trim();
   if(!s) return null;
-  const n=Number(s);
+  const n = Number(s);
   return Number.isFinite(n)?n:null;
 }
 
-function normalize(text){
-  const {header,rows,delim}=parseTable(text);
+function normalize(rows){
+  const header = rows[0];
+  const iMachine = header.findIndex(h=>h.includes("機種"));
+  const iNo = header.findIndex(h=>h.includes("台"));
+  const iG = header.findIndex(h=>h.includes("G"));
+  const iDiff = header.findIndex(h=>h.includes("差"));
 
-  const debug=document.getElementById("debug");
-  debug.textContent="ヘッダー検出: "+header.join(" | ")+"\n";
-
-  if(!header.length){
-    return {ok:false,why:"ヘッダーなし"};
-  }
-
-  const iNo=findCol(header,["台番号","台番"]);
-  const iDiff=findCol(header,["差枚"]);
-  const iMachine=findCol(header,["機種名","機種"]);
-  const iG=findCol(header,["G数","G"]);
-
-  debug.textContent +=
-    "列位置: 台="+iNo+
-    " 差枚="+iDiff+
-    " 機種="+iMachine+
-    " G="+iG+"\n";
+  document.getElementById("debug").textContent =
+    "ヘッダー: "+header.join(" | ")+"\n"+
+    "列位置 → 機種:"+iMachine+" 台:"+iNo+" G:"+iG+" 差枚:"+iDiff+"\n";
 
   if(iNo<0 || iDiff<0){
-    return {ok:false,why:"台番号または差枚列が見つからない"};
+    return {ok:false};
   }
 
   const out=[];
-  for(const r of rows){
-    const no=toNum(r[iNo]);
-    const diff=toNum(r[iDiff])??0;
-    const g=iG>=0?(toNum(r[iG])??0):0;
-    const machine=iMachine>=0?r[iMachine]:"";
-
+  for(let i=1;i<rows.length;i++){
+    const r = rows[i];
+    const machine = r[iMachine];
+    const no = toNum(r[iNo]);
+    const g = iG>=0 ? (toNum(r[iG])??0) : 0;
+    const diff = toNum(r[iDiff])??0;
     if(no==null) continue;
-    out.push({no,diff,g,machine});
+    out.push({machine,no,g,diff});
   }
-
   return {ok:true,data:out};
 }
 
-function makePrediction(){
-  const text=document.getElementById("yData").value;
-  const norm=normalize(text);
+async function makePrediction(){
+
+  const file = document.getElementById("yFile").files[0];
+  if(!file){alert("前日CSVを選択");return;}
+
+  const text = await file.text();
+  const rows = parseCSV(text);
+  const norm = normalize(rows);
 
   if(!norm.ok){
-    document.getElementById("result").innerHTML="<span class='ng'>予想失敗</span>";
-    document.getElementById("debug").textContent+=norm.why;
+    document.getElementById("result").innerHTML="<span class='ng'>列検出失敗</span>";
     return;
   }
 
-  prediction=norm.data
-    .map(x=>{
-      const dip=(x.g>=2000 && x.diff<0)?Math.abs(x.diff):0;
-      return {...x,score:dip};
-    })
-    .sort((a,b)=>b.score-a.score)
-    .slice(0,15);
+  yesterdayData = norm.data;
+
+  const mainOnly = yesterdayData.filter(d=>
+    MAIN_AT.some(at=>d.machine.includes(at))
+  );
+
+  const strongSet = new Set(
+    mainOnly.filter(d=>d.diff>=3000).map(d=>d.no)
+  );
+
+  prediction = mainOnly.map(d=>{
+    let score = 0;
+    let reason = [];
+
+    // 凹み高稼働最重視
+    if(d.g>=3500 && d.diff<0){
+      score += (d.g/1000)*6 + Math.min(20,Math.abs(d.diff)/500);
+      reason.push("凹み高稼働");
+    }
+
+    // 隣接スライド
+    if(strongSet.has(d.no-1)||strongSet.has(d.no+1)){
+      score += 10;
+      reason.push("隣接");
+    }
+
+    return {...d,score,reason:reason.join("/")};
+  });
+
+  prediction.sort((a,b)=>b.score-a.score);
+
+  // 重複排除
+  prediction = [...new Map(prediction.map(p=>[p.no,p])).values()].slice(0,15);
+
+  renderPrediction();
 
   document.getElementById("result").innerHTML="<span class='ok'>予想OK</span>";
-  document.getElementById("output").textContent=
-    "予想台: "+prediction.map(p=>p.no).join(", ");
 }
 
-function evaluate(){
-  if(!prediction.length){
+function renderPrediction(){
+  let html="<table><tr><th>順位</th><th>台番号</th><th>機種</th><th>G</th><th>差枚</th><th>スコア</th><th>理由</th></tr>";
+  prediction.forEach((p,i)=>{
+    html+=`<tr>
+      <td>${i+1}</td>
+      <td>${p.no}</td>
+      <td>${p.machine}</td>
+      <td>${p.g}</td>
+      <td>${p.diff}</td>
+      <td>${p.score.toFixed(1)}</td>
+      <td>${p.reason}</td>
+    </tr>`;
+  });
+  html+="</table>";
+  document.getElementById("predOut").innerHTML=html;
+}
+
+async function evaluate(){
+
+  if(prediction.length===0){
     alert("先に予想作成");
     return;
   }
 
-  const text=document.getElementById("tData").value;
-  const norm=normalize(text);
+  const file = document.getElementById("tFile").files[0];
+  if(!file){alert("当日CSVを選択");return;}
+
+  const text = await file.text();
+  const rows = parseCSV(text);
+  const norm = normalize(rows);
 
   if(!norm.ok){
-    document.getElementById("result").innerHTML="<span class='ng'>検証失敗</span>";
+    document.getElementById("result").innerHTML="<span class='ng'>検証列エラー</span>";
     return;
   }
 
-  const strong=[...norm.data].sort((a,b)=>b.diff-a.diff).slice(0,15);
-  const strongSet=new Set(strong.map(x=>x.no));
+  const sorted = [...norm.data].sort((a,b)=>b.diff-a.diff);
+  const strongSet = new Set(sorted.slice(0,15).map(d=>d.no));
 
-  const hit=prediction.filter(p=>strongSet.has(p.no));
-  const uniqueHit=[...new Set(hit.map(h=>h.no))];
+  const hit = prediction.filter(p=>strongSet.has(p.no));
+  const uniqueHit = [...new Set(hit.map(h=>h.no))];
 
-  document.getElementById("result").innerHTML="<span class='ok'>検証OK</span>";
-  document.getElementById("output").textContent=
+  document.getElementById("evalOut").textContent =
     "命中数: "+uniqueHit.length+
     "\n命中台: "+(uniqueHit.join(",")||"なし");
 }
