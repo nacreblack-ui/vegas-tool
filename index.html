@@ -164,22 +164,52 @@ function renderPrediction(){
 
 async function evaluate(){
 
+  console.log("検証開始");
+
   if(prediction.length===0){
-    alert("先に予想作成");
+    alert("先に予想作成してください");
     return;
   }
 
   const file = document.getElementById("tFile").files[0];
-  if(!file){alert("当日CSVを選択");return;}
+
+  if(!file){
+    alert("当日CSVが選択されていません");
+    return;
+  }
 
   const text = await file.text();
+  console.log("CSV読み込み成功");
+
   const rows = parseCSV(text);
   const norm = normalize(rows);
 
   if(!norm.ok){
-    document.getElementById("result").innerHTML="<span class='ng'>検証列エラー</span>";
+    alert("当日CSVの列検出に失敗しました");
+    document.getElementById("debug").textContent += "当日CSV列検出失敗";
     return;
   }
+
+  if(norm.data.length===0){
+    alert("当日CSVのデータが空です");
+    return;
+  }
+
+  const sorted = [...norm.data].sort((a,b)=>b.diff-a.diff);
+  const strongSet = new Set(sorted.slice(0,15).map(d=>d.no));
+
+  const hit = prediction.filter(p=>strongSet.has(p.no));
+  const uniqueHit = [...new Set(hit.map(h=>h.no))];
+
+  document.getElementById("evalOut").textContent =
+    "命中数: "+uniqueHit.length+
+    "\n命中台: "+(uniqueHit.join(",")||"なし");
+
+  console.log("検証完了");
+}
+
+  const file = document.getElementById("tFile").files[0];
+  if(!file){alert("当日CSVを選択");return;}
 
   const sorted = [...norm.data].sort((a,b)=>b.diff-a.diff);
   const strongSet = new Set(sorted.slice(0,15).map(d=>d.no));
@@ -196,3 +226,4 @@ async function evaluate(){
 
 </body>
 </html>
+
