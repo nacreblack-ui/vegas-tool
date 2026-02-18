@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>ana-slo 解析モード</title>
+<style>
+  body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;margin:16px}
+  textarea{width:100%;height:200px;padding:10px;font-size:14px}
+  button{padding:10px 14px;font-size:14px;margin:6px 8px 6px 0}
+  .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:10px 0}
+  table{border-collapse:collapse;width:100%;margin-top:12px;overflow-x:auto;display:block}
+  th,td{border:1px solid #ddd;padding:6px 8px;white-space:nowrap;font-size:12px}
+  th{background:#f7f7f7}
+  .hint{color:#666;font-size:12px;line-height:1.5}
+  .kpi{display:flex;gap:12px;flex-wrap:wrap;margin-top:10px}
+  .card{border:1px solid #ddd;border-radius:12px;padding:10px 12px;min-width:140px}
+  .card b{display:block;font-size:12px;color:#555}
+  .card div{font-size:16px;margin-top:4px}
+</style>
+</head>
+<body>
+
+<h2>ana-slo 解析モード（貼るだけ）</h2>
+<p class="hint">
+  Firefoxで「解析用TSVをコピー」→ ここに貼る → 解析。<br/>
+  ※末尾URLが混ざっても自動除去。G数/差枚/BB/RBは数値化（カンマ除去）。
+</p>
+
+<textarea id="input" placeholder="ここに貼り付け（TSV/CSV）"></textarea>
+
+<div class="row">
+  <label><input type="checkbox" id="withBom" checked> UTF-8(BOM付き)（Excel向け）</label>
+  <label><input type="checkbox" id="groupBlank" checked> 機種ごとに空行（TSV出力）</label>
+</div>
+
+<div class="row">
+  <button id="btnAnalyze">解析</button>
+  <button id="btnCopySummary">集計をコピー</button>
+  <button id="btnDownloadDetail">明細CSV保存</button>
+  <button id="btnDownloadSummary">集計CSV保存</button>
+  <button id="btnClear">クリア</button>
+</div>
+
+<div id="meta" class="hint"></div>
+
+<div class="kpi" id="kpis"></div>
+
+<h3 style="margin-top:18px">機種別 集計</h3>
+<div id="summary"></div>
+
+<h3 style="margin-top:18px">明細（先頭100行）</h3>
+<div id="detail"></div>
+
+<script>
+  const elInput = document.getElementById("input");
+  const elMeta = document.getElementById("meta");
+  const elKpis = document.getElementById("kpis");
+  const elSummary = document.getElementById("summary");
+  const elDetail = document.getElementById("detail");
+
+  let detailRows = [];     // 正規化済み 明細（ヘッダー除く）
+  let summaryRows = [];    // 集計（ヘッダー含む）
+
+  function sanitizeText(text){
+    let t = String(text ?? "");
+    // URL行/URL混入を除去（ana-sloは末尾に長いURLがつきがち）
+    t = t.split(/\r?\n/).filter(line => !/^https?:\/\/\S+$/i.test(line.trim())).join("\n");
+    // 先頭/末尾の引用符を剥がす
+    t = t.trim().replace(/^"+/, "").replace(/"+$/, "");
+    return t;
+  }
+
+  function detectDelimiter(text){
+    if (text.includes("\t")) return "\t";
+    if (text.includes(",")) return ",";
+    return /\s{2,}/;
+  }
+
+  function toNumberLike(str){
+    // "7,099" "+540" "-1,453" を数値化（失敗したら null）
+    const s = String(str ?? "").trim().replace(/,/g,"");
+    if (!s) return null;
+    // "+540" など
+    const n = Number(s);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function parseProbDenominator(s){
+    // "1/126.8" -> 126.8
+    const m = String(s ?? "").trim().match(/^1\s*\/\s*([0-9.]+)$/);
+    if (!m) return null;
+    const v = Number(m[1]);
+    return Number.isFinite(v) ? v : null;
+  }
+
+  function parseTable(text){
+    const cleaned = sanitizeText(text);
+    const trimmed = cleaned.replace(/^\uFEFF/, "").trim();
+    if (!trimmed) return { header: null, rows: [] };
+
+    const delim = detectDelimiter(trimmed);
+    const lines = trimmed.split(/\r?\n/).filter(l => l.trim().length>0);
+
+    const rows = lines.map(line => {
+      if (delim instanceof RegExp) return line.trim().split(delim).map(x=>x.trim());
+      return line.split(delim).map(x=>x.trim());
+    });
+
+    // ヘッダー判定：先頭行に「機種名」等があればヘッダー扱い
+    const first = rows[0] || [];
+    const hasHeader = first.join(" ").includes("機種名") && first.join(" ").includes("台") ;
+    const header = hasHeader ? first.slice(0,9) : ["機種名","台番号","G数","差枚","BB","RB","合成確率","BB確率","RB確率"];
+    const body = hasHeader ? rows.slice(1) : rows;
+
+    // 9列以上の行だけ採用（不足は捨てる）
+    const body9 = body.filter(r => r.length >= 9).map(r => r.slice(0,9));
+
+    return { header, rows: body9 };
+  }
+
+  function escapeHtml(str){
+    return String(str ?? "")
+      .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+      .replace(/"/g,"&quot;").replace(/'/g,"&#039;");
+  }
+
+  function csvEscape(v){
+    const s = String(v ?? "");
+    const needs = /[",\r\n]/.test(s);
+    const esc = s.replace(/"/g,'""');
+    return needs ? `"${esc}"` : esc;
+  }
+
+  function download(filename, text, withBom){
+    const bom = withBom ? "\uFEFF" : "";
+    const blob = new Blob([bom + text], {type:"text/csv;charset=utf-8"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function renderKpis(rows){
+    if (!rows.length){
+      elKpis.innerHTML = "";
+      return;
+    }
+    const total = rows.length;
+    const win = rows.filter(r => r.diff != null && r.diff > 0).length;
+    const winRate = total ? (win/total*100) : 0;
+
+    const sumDiff = rows.reduce((a,r)=>a+(r.diff??0),0);
+    const sumG = rows.reduce((a,r)=>a+(r.g??0),0);
+    const avgDiff = total ? sumDiff/total : 0;
+    const avgG = total ? sumG/total : 0;
+
+    elKpis.innerHTML = `
+      <div class="card"><b>総台数</b><div>${total}</div></div>
+      <div class="card"><b>勝ち台数</b><div>${win}</div></div>
+      <div class="card"><b>勝率</b><div>${winRate.toFixed(1)}%</div></div>
+      <div class="card"><b>総差枚</b><div>${Math.round(sumDiff).toLocaleString()}</div></div>
+      <div class="card"><b>平均差枚</b><div>${Math.round(avgDiff).toLocaleString()}</div></div>
+      <div class="card"><b>平均G数</b><div>${Math.round(avgG).toLocaleString()}</div></div>
+    `;
+  }
+
+  function analyze(){
+    const { header, rows } = parseTable(elInput.value);
+    if (!rows.length){
+      elMeta.textContent = "データが見つかりません（表コピーが入っているか確認）";
+      elSummary.innerHTML = "";
+      elDetail.innerHTML = "";
+      elKpis.innerHTML = "";
+      detailRows = [];
+      summaryRows = [];
+      return;
+    }
+
+    // 明細を正規化
+    detailRows = rows.map(r => {
+      const machine = r[0];
+      const no = r[1];
+      const g = toNumberLike(r[2]);
+      const diff = toNumberLike(r[3]);
+      const bb = toNumberLike(r[4]);
+      const rb = toNumberLike(r[5]);
+      const compDen = parseProbDenominator(r[6]);
+      const bbDen = parseProbDenominator(r[7]);
+      const rbDen = parseProbDenominator(r[8]);
+
+      return {
+        machine, no,
+        g, diff, bb, rb,
+        comp: r[6], bbp: r[7], rbp: r[8],
+        compDen, bbDen, rbDen
+      };
+    });
+
+    // 機種別集計
+    const by = new Map();
+    for (const r of detailRows){
+      if (!by.has(r.machine)) by.set(r.machine, []);
+      by.get(r.machine).push(r);
+    }
+
+    // 集計行作成
+    summaryRows = [["機種名","台数","勝率(%)","総差枚","平均差枚","平均G数","平均合成分母","平均BB分母","平均RB分母"]];
+    const machines = [...by.keys()].sort((a,b)=>a.localeCompare(b,'ja'));
+    for (const m of machines){
+      const arr = by.get(m);
+      const n = arr.length;
+      const win = arr.filter(x => (x.diff ?? 0) > 0).length;
+      const winRate = n ? (win/n*100) : 0;
+
+      const sumDiff = arr.reduce((a,x)=>a+(x.diff??0),0);
+      const sumG = arr.reduce((a,x)=>a+(x.g??0),0);
+      const avgDiff = n ? sumDiff/n : 0;
+      const avgG = n ? sumG/n : 0;
+
+      const avgComp = average(arr.map(x=>x.compDen));
+      const avgBB = average(arr.map(x=>x.bbDen));
+      const avgRB = average(arr.map(x=>x.rbDen));
+
+      summaryRows.push([
+        m,
+        String(n),
+        winRate.toFixed(1),
+        String(Math.round(sumDiff)),
+        String(Math.round(avgDiff)),
+        String(Math.round(avgG)),
+        avgComp==null?"":avgComp.toFixed(1),
+        avgBB==null?"":avgBB.toFixed(1),
+        avgRB==null?"":avgRB.toFixed(1),
+      ]);
+    }
+
+    elMeta.textContent = `明細 ${detailRows.length} 行を解析しました（URL混入は自動除去）`;
+
+    renderKpis(detailRows);
+    renderSummaryTable(summaryRows);
+    renderDetailTable(header, rows);
+
+    function average(vals){
+      const v = vals.filter(x => typeof x === "number" && Number.isFinite(x));
+      if (!v.length) return null;
+      return v.reduce((a,x)=>a+x,0)/v.length;
+    }
+  }
+
+  function renderSummaryTable(rows){
+    const head = rows[0].map(h=>`<th>${escapeHtml(h)}</th>`).join("");
+    const body = rows.slice(1).map(r => `<tr>${r.map(c=>`<td>${escapeHtml(c)}</td>`).join("")}</tr>`).join("");
+    elSummary.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+  }
+
+  function renderDetailTable(header, rows){
+    const head = header.map(h=>`<th>${escapeHtml(h)}</th>`).join("");
+    const body = rows.slice(0,100).map(r => `<tr>${r.map(c=>`<td>${escapeHtml(c)}</td>`).join("")}</tr>`).join("");
+    elDetail.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+  }
+
+  function buildDetailCSV(){
+    const header = ["機種名","台番号","G数","差枚","BB","RB","合成確率","BB確率","RB確率","合成分母","BB分母","RB分母"];
+    const lines = [header.map(csvEscape).join(",")];
+    for (const r of detailRows){
+      lines.push([
+        r.machine, r.no,
+        r.g ?? "", r.diff ?? "", r.bb ?? "", r.rb ?? "",
+        r.comp, r.bbp, r.rbp,
+        r.compDen ?? "", r.bbDen ?? "", r.rbDen ?? ""
+      ].map(csvEscape).join(","));
+    }
+    return lines.join("\r\n");
+  }
+
+  function buildSummaryCSV(){
+    return summaryRows.map(row => row.map(csvEscape).join(",")).join("\r\n");
+  }
+
+  function copySummary(){
+    if (!summaryRows.length) return;
+    const tsv = summaryRows.map(r => r.join("\t")).join("\n");
+    navigator.clipboard.writeText(tsv);
+  }
+
+  document.getElementById("btnAnalyze").addEventListener("click", analyze);
+
+  document.getElementById("btnCopySummary").addEventListener("click", () => {
+    copySummary();
+    alert("機種別集計（TSV）をコピーしました");
+  });
+
+  document.getElementById("btnDownloadDetail").addEventListener("click", () => {
+    if (!detailRows.length) return;
+    download("anaslo_detail.csv", buildDetailCSV(), document.getElementById("withBom").checked);
+  });
+
+  document.getElementById("btnDownloadSummary").addEventListener("click", () => {
+    if (!summaryRows.length) return;
+    download("anaslo_summary.csv", buildSummaryCSV(), document.getElementById("withBom").checked);
+  });
+
+  document.getElementById("btnClear").addEventListener("click", () => {
+    elInput.value = "";
+    elMeta.textContent = "";
+    elKpis.innerHTML = "";
+    elSummary.innerHTML = "";
+    elDetail.innerHTML = "";
+    detailRows = [];
+    summaryRows = [];
+  });
+
+  // 貼ったら自動解析（好みでON/OFFしてもいい）
+  elInput.addEventListener("paste", () => setTimeout(analyze, 50));
+</script>
+
+</body>
+</html>
