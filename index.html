@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>VEGAS 主力AT特化 予想ツール</title>
+<title>VEGAS 主力AT特化 進化版</title>
 <style>
 body{font-family:sans-serif;margin:20px}
 button{padding:10px;margin:5px 0}
@@ -17,7 +17,7 @@ pre{background:#f5f5f5;padding:10px;white-space:pre-wrap}
 </head>
 <body>
 
-<h2>VEGAS 主力AT特化 予想ツール</h2>
+<h2>VEGAS 主力AT特化 進化版</h2>
 
 <p>前日CSV</p>
 <input type="file" id="yFile" accept=".csv">
@@ -33,7 +33,6 @@ pre{background:#f5f5f5;padding:10px;white-space:pre-wrap}
 
 <div id="result" class="big"></div>
 <div id="predOut"></div>
-<pre id="debug"></pre>
 <pre id="evalOut"></pre>
 
 <script>
@@ -69,18 +68,12 @@ function normalize(rows){
   const iG = header.findIndex(h=>h.includes("G"));
   const iDiff = header.findIndex(h=>h.includes("差"));
 
-  document.getElementById("debug").textContent =
-    "ヘッダー: "+header.join(" | ")+"\n"+
-    "列位置 → 機種:"+iMachine+" 台:"+iNo+" G:"+iG+" 差枚:"+iDiff+"\n";
-
-  if(iNo<0 || iDiff<0){
-    return {ok:false};
-  }
+  if(iNo<0 || iDiff<0) return {ok:false};
 
   const out=[];
   for(let i=1;i<rows.length;i++){
     const r = rows[i];
-    const machine = iMachine>=0 ? r[iMachine] : "";
+    const machine = r[iMachine];
     const no = toNum(r[iNo]);
     const g = iG>=0 ? (toNum(r[iG]) ?? 0) : 0;
     const diff = toNum(r[iDiff]) ?? 0;
@@ -98,11 +91,7 @@ async function makePrediction(){
   const text = await file.text();
   const rows = parseCSV(text);
   const norm = normalize(rows);
-
-  if(!norm.ok){
-    document.getElementById("result").innerHTML="<span class='ng'>列検出失敗</span>";
-    return;
-  }
+  if(!norm.ok){ alert("列検出失敗"); return; }
 
   const mainOnly = norm.data.filter(d =>
     MAIN_AT.some(at => d.machine.includes(at))
@@ -116,13 +105,23 @@ async function makePrediction(){
     let score=0;
     let reason=[];
 
+    // A) 機種内ローテーション
+
+    // 強台そのものは減点
+    if(strongSet.has(d.no)){
+      score -= 8;
+      reason.push("前日強台");
+    }
+
+    // 機種内凹み重視
     if(d.g>=3500 && d.diff<0){
       score += (d.g/1000)*6;
       reason.push("凹み高稼働");
     }
 
+    // B) 隣接重み調整
     if(strongSet.has(d.no-1)||strongSet.has(d.no+1)){
-      score += 10;
+      score += 6;
       reason.push("隣接");
     }
 
@@ -166,11 +165,7 @@ async function runCheck(){
   const text = await file.text();
   const rows = parseCSV(text);
   const norm = normalize(rows);
-
-  if(!norm.ok){
-    document.getElementById("result").innerHTML="<span class='ng'>検証列エラー</span>";
-    return;
-  }
+  if(!norm.ok){ alert("検証列エラー"); return; }
 
   const sorted = [...norm.data].sort((a,b)=>b.diff-a.diff);
   const strongSet = new Set(sorted.slice(0,15).map(d=>d.no));
