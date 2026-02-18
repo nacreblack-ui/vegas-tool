@@ -39,6 +39,10 @@ pre{background:#f5f5f5;padding:10px;white-space:pre-wrap}
 
 <script>
 
+window.onerror = function(message, source, lineno, colno, error) {
+  alert("JSエラー発生: " + message);
+};
+  
 const MAIN_AT = [
 "モンキーターンV",
 "東京喰種",
@@ -229,6 +233,7 @@ async function evaluate(){
 
 </body>
 </html>
+
 
 
 
