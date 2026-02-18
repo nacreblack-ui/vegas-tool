@@ -49,12 +49,13 @@ const MAIN_AT = [
 let prediction = [];
 let yesterdayData = [];
 
+/* ===================== CSV処理 ===================== */
+
 function parseCSV(text){
   text = text.replace(/^\uFEFF/, "").replace(/\r/g,"");
   const lines = text.split("\n").filter(l=>l.trim());
   const delim = text.includes("\t") ? "\t" : ",";
-  const rows = lines.map(l=>l.replace(/"/g,"").split(delim));
-  return rows;
+  return lines.map(l=>l.replace(/"/g,"").split(delim));
 }
 
 function toNum(v){
@@ -65,7 +66,9 @@ function toNum(v){
 }
 
 function normalize(rows){
+
   const header = rows[0];
+
   const iMachine = header.findIndex(h=>h.includes("機種"));
   const iNo = header.findIndex(h=>h.includes("台"));
   const iG = header.findIndex(h=>h.includes("G"));
@@ -82,20 +85,28 @@ function normalize(rows){
   const out=[];
   for(let i=1;i<rows.length;i++){
     const r = rows[i];
-    const machine = r[iMachine];
+    const machine = iMachine>=0 ? r[iMachine] : "";
     const no = toNum(r[iNo]);
-    const g = iG>=0 ? (toNum(r[iG])??0) : 0;
-    const diff = toNum(r[iDiff])??0;
+    const g = iG>=0 ? (toNum(r[iG]) ?? 0) : 0;
+    const diff = toNum(r[iDiff]) ?? 0;
+
     if(no==null) continue;
+
     out.push({machine,no,g,diff});
   }
+
   return {ok:true,data:out};
 }
+
+/* ===================== 予想 ===================== */
 
 async function makePrediction(){
 
   const file = document.getElementById("yFile").files[0];
-  if(!file){alert("前日CSVを選択");return;}
+  if(!file){
+    alert("前日CSVを選択してください");
+    return;
+  }
 
   const text = await file.text();
   const rows = parseCSV(text);
@@ -108,8 +119,8 @@ async function makePrediction(){
 
   yesterdayData = norm.data;
 
-  const mainOnly = yesterdayData.filter(d=>
-    MAIN_AT.some(at=>d.machine.includes(at))
+  const mainOnly = yesterdayData.filter(d =>
+    MAIN_AT.some(at => d.machine.includes(at))
   );
 
   const strongSet = new Set(
@@ -117,17 +128,17 @@ async function makePrediction(){
   );
 
   prediction = mainOnly.map(d=>{
-    let score = 0;
-    let reason = [];
+    let score=0;
+    let reason=[];
 
-    // 凹み高稼働最重視
+    // 凹み高稼働
     if(d.g>=3500 && d.diff<0){
       score += (d.g/1000)*6 + Math.min(20,Math.abs(d.diff)/500);
       reason.push("凹み高稼働");
     }
 
     // 隣接スライド
-    if(strongSet.has(d.no-1)||strongSet.has(d.no+1)){
+    if(strongSet.has(d.no-1) || strongSet.has(d.no+1)){
       score += 10;
       reason.push("隣接");
     }
@@ -146,7 +157,9 @@ async function makePrediction(){
 }
 
 function renderPrediction(){
+
   let html="<table><tr><th>順位</th><th>台番号</th><th>機種</th><th>G</th><th>差枚</th><th>スコア</th><th>理由</th></tr>";
+
   prediction.forEach((p,i)=>{
     html+=`<tr>
       <td>${i+1}</td>
@@ -158,13 +171,15 @@ function renderPrediction(){
       <td>${p.reason}</td>
     </tr>`;
   });
+
   html+="</table>";
+
   document.getElementById("predOut").innerHTML=html;
 }
 
-async function evaluate(){
+/* ===================== 検証 ===================== */
 
-  console.log("検証開始");
+async function evaluate(){
 
   if(prediction.length===0){
     alert("先に予想作成してください");
@@ -172,26 +187,22 @@ async function evaluate(){
   }
 
   const file = document.getElementById("tFile").files[0];
-
   if(!file){
-    alert("当日CSVが選択されていません");
+    alert("当日CSVを選択してください");
     return;
   }
 
   const text = await file.text();
-  console.log("CSV読み込み成功");
-
   const rows = parseCSV(text);
   const norm = normalize(rows);
 
   if(!norm.ok){
-    alert("当日CSVの列検出に失敗しました");
-    document.getElementById("debug").textContent += "当日CSV列検出失敗";
+    document.getElementById("result").innerHTML="<span class='ng'>検証列エラー</span>";
     return;
   }
 
   if(norm.data.length===0){
-    alert("当日CSVのデータが空です");
+    alert("当日データが空です");
     return;
   }
 
@@ -205,25 +216,10 @@ async function evaluate(){
     "命中数: "+uniqueHit.length+
     "\n命中台: "+(uniqueHit.join(",")||"なし");
 
-  console.log("検証完了");
-}
-
-  const file = document.getElementById("tFile").files[0];
-  if(!file){alert("当日CSVを選択");return;}
-
-  const sorted = [...norm.data].sort((a,b)=>b.diff-a.diff);
-  const strongSet = new Set(sorted.slice(0,15).map(d=>d.no));
-
-  const hit = prediction.filter(p=>strongSet.has(p.no));
-  const uniqueHit = [...new Set(hit.map(h=>h.no))];
-
-  document.getElementById("evalOut").textContent =
-    "命中数: "+uniqueHit.length+
-    "\n命中台: "+(uniqueHit.join(",")||"なし");
+  document.getElementById("result").innerHTML="<span class='ok'>検証完了</span>";
 }
 
 </script>
 
 </body>
 </html>
-
