@@ -1,5 +1,3 @@
-<h1>TEST VERSION 999</h1>
-<h1>TEST VERSION 12345</h1>
 <!doctype html>
 <html lang="ja">
 <head>
@@ -29,7 +27,7 @@ pre{background:#f5f5f5;padding:10px;white-space:pre-wrap}
 
 <p>当日CSV（検証用）</p>
 <input type="file" id="tFile" accept=".csv">
-<button onclick="evaluate()">検証</button>
+<button onclick="runCheck()">検証</button>
 
 <hr>
 
@@ -40,10 +38,6 @@ pre{background:#f5f5f5;padding:10px;white-space:pre-wrap}
 
 <script>
 
-window.onerror = function(message, source, lineno, colno, error) {
-  alert("JSエラー発生: " + message);
-};
-  
 const MAIN_AT = [
 "モンキーターンV",
 "東京喰種",
@@ -53,9 +47,6 @@ const MAIN_AT = [
 ];
 
 let prediction = [];
-let yesterdayData = [];
-
-/* ===================== CSV処理 ===================== */
 
 function parseCSV(text){
   text = text.replace(/^\uFEFF/, "").replace(/\r/g,"");
@@ -72,9 +63,7 @@ function toNum(v){
 }
 
 function normalize(rows){
-
   const header = rows[0];
-
   const iMachine = header.findIndex(h=>h.includes("機種"));
   const iNo = header.findIndex(h=>h.includes("台"));
   const iG = header.findIndex(h=>h.includes("G"));
@@ -95,24 +84,16 @@ function normalize(rows){
     const no = toNum(r[iNo]);
     const g = iG>=0 ? (toNum(r[iG]) ?? 0) : 0;
     const diff = toNum(r[iDiff]) ?? 0;
-
     if(no==null) continue;
-
     out.push({machine,no,g,diff});
   }
-
   return {ok:true,data:out};
 }
-
-/* ===================== 予想 ===================== */
 
 async function makePrediction(){
 
   const file = document.getElementById("yFile").files[0];
-  if(!file){
-    alert("前日CSVを選択してください");
-    return;
-  }
+  if(!file){ alert("前日CSVを選択"); return; }
 
   const text = await file.text();
   const rows = parseCSV(text);
@@ -123,9 +104,7 @@ async function makePrediction(){
     return;
   }
 
-  yesterdayData = norm.data;
-
-  const mainOnly = yesterdayData.filter(d =>
+  const mainOnly = norm.data.filter(d =>
     MAIN_AT.some(at => d.machine.includes(at))
   );
 
@@ -137,14 +116,12 @@ async function makePrediction(){
     let score=0;
     let reason=[];
 
-    // 凹み高稼働
     if(d.g>=3500 && d.diff<0){
-      score += (d.g/1000)*6 + Math.min(20,Math.abs(d.diff)/500);
+      score += (d.g/1000)*6;
       reason.push("凹み高稼働");
     }
 
-    // 隣接スライド
-    if(strongSet.has(d.no-1) || strongSet.has(d.no+1)){
+    if(strongSet.has(d.no-1)||strongSet.has(d.no+1)){
       score += 10;
       reason.push("隣接");
     }
@@ -153,19 +130,14 @@ async function makePrediction(){
   });
 
   prediction.sort((a,b)=>b.score-a.score);
-
-  // 重複排除
   prediction = [...new Map(prediction.map(p=>[p.no,p])).values()].slice(0,15);
 
   renderPrediction();
-
   document.getElementById("result").innerHTML="<span class='ok'>予想OK</span>";
 }
 
 function renderPrediction(){
-
   let html="<table><tr><th>順位</th><th>台番号</th><th>機種</th><th>G</th><th>差枚</th><th>スコア</th><th>理由</th></tr>";
-
   prediction.forEach((p,i)=>{
     html+=`<tr>
       <td>${i+1}</td>
@@ -177,31 +149,19 @@ function renderPrediction(){
       <td>${p.reason}</td>
     </tr>`;
   });
-
   html+="</table>";
-
   document.getElementById("predOut").innerHTML=html;
 }
 
-/* ===================== 検証 ===================== */
+async function runCheck(){
 
-async function evaluate(){
-
-　alert("検証開始");
-  
-
-　alert("検証ボタンは押されました");
-  
   if(prediction.length===0){
     alert("先に予想作成してください");
     return;
   }
 
   const file = document.getElementById("tFile").files[0];
-  if(!file){
-    alert("当日CSVを選択してください");
-    return;
-  }
+  if(!file){ alert("当日CSVを選択"); return; }
 
   const text = await file.text();
   const rows = parseCSV(text);
@@ -209,11 +169,6 @@ async function evaluate(){
 
   if(!norm.ok){
     document.getElementById("result").innerHTML="<span class='ng'>検証列エラー</span>";
-    return;
-  }
-
-  if(norm.data.length===0){
-    alert("当日データが空です");
     return;
   }
 
@@ -234,8 +189,3 @@ async function evaluate(){
 
 </body>
 </html>
-
-
-
-
-
