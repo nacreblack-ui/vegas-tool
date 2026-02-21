@@ -1,311 +1,129 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>VEGAS 主軸4 単品傾向抽出（strong×上位20%）</title>
-  <style>
-    body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;margin:16px}
-    h2{margin:0 0 10px}
-    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:10px 0}
-    input,button{padding:10px;font-size:14px}
-    input[type="number"]{width:120px}
-    pre{background:#111;color:#0f0;padding:10px;border-radius:10px;font-size:12px;white-space:pre-wrap}
-    table{border-collapse:collapse;width:100%;margin-top:10px;display:block;overflow-x:auto}
-    th,td{border:1px solid #ddd;padding:6px 8px;white-space:nowrap;font-size:12px}
-    th{background:#f7f7f7;color:#111}
-    .muted{color:#666;font-size:12px;line-height:1.5}
-    .pill{display:inline-block;padding:2px 8px;border:1px solid #ddd;border-radius:999px;font-size:12px;background:#fafafa;margin-right:6px}
-  </style>
-
-  <!-- GitHub Pagesで確実に動かすためローカル同梱推奨 -->
-  <script src="jszip.min.js"></script>
+<meta charset="UTF-8">
+<title>VEGAS 主軸4 単品傾向抽出</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+body{font-family:sans-serif;padding:15px}
+button{padding:6px 12px;margin:5px 0}
+input{width:70px}
+#log{background:#111;color:#0f0;padding:10px;margin-top:10px;white-space:pre-wrap}
+table{border-collapse:collapse;margin-top:10px}
+td,th{border:1px solid #999;padding:4px}
+</style>
 </head>
 <body>
 
 <h2>VEGAS 主軸4 単品傾向抽出（strong × 機種内上位20%）</h2>
-<div class="muted">
-ZIP（1日1CSV/TSV）を読み込み → strong（総差枚上位X%）の日だけを対象に、主軸4各機種の「差枚上位20%」に入った台番号をカウントしてランキング化します。<br>
-重複行があるCSVでも、<b>機種×台番号でG数が最大の行</b>だけを採用します。
-</div>
 
-<div class="row">
-  <input type="file" id="zipFile" accept=".zip">
-  <button id="runBtn">解析開始</button>
-</div>
+<input type="file" id="zipFile">
+<br>
+strong割合(%) <input type="number" id="strongPct" value="15">
+上位割合(%) <input type="number" id="topPct" value="20">
+表示件数 <input type="number" id="limit" value="30">
+<br>
+<button onclick="analyze()">解析開始</button>
 
-<div class="row">
-  <label>strong割合(%)
-    <input type="number" id="strongPct" value="15" min="5" max="30">
-  </label>
-  <label>上位割合(%)
-    <input type="number" id="topPct" value="20" min="5" max="50">
-  </label>
-  <label>表示件数
-    <input type="number" id="topK" value="30" min="5" max="200">
-  </label>
-</div>
-
-<div id="meta"></div>
-<pre id="log">ここにログが出ます</pre>
-
-<h3>機種別ランキング</h3>
-<div id="byMachine"></div>
-
-<h3>4機種横断ランキング</h3>
-<div id="overall"></div>
+<div id="log"></div>
+<div id="result"></div>
 
 <script>
-(() => {
-  const MAIN4 = [
-    "スマスロ北斗の拳",
-    "モンキーターンV",
-    "甲鉄城のカバネリ",
-    "東京喰種"
-  ];
 
-  const $ = (id) => document.getElementById(id);
-  const log = (s) => { $("log").textContent = s; };
+const MAIN = ["スマスロ北斗","モンキーターン","甲鉄城","東京喰種"];
 
-  function extractDate(filename){
-    const m = filename.match(/\d{4}-\d{2}-\d{2}/);
-    return m ? m[0] : null;
-  }
+function cleanNumber(str){
+  return Number(String(str).replace(/,/g,""))||0;
+}
 
-  // 数字の桁区切りカンマだけ除去（区切り文字のカンマは残す）
-  function normalizeThousandsCommas(text){
-    return text.replace(/(\d),(?=\d{3}(\D|$))/g, "$1");
-  }
+async function analyze(){
 
-  function parseTable(text){
-    text = text.replace(/^\uFEFF/,"").replace(/\r/g,"");
-    text = normalizeThousandsCommas(text);
-    const delim = text.includes("\t") ? "\t" : ",";
-    const lines = text.split("\n").filter(l => l.trim().length);
-    const rows = lines.map(l => l.replace(/"/g,"").split(delim));
-    return rows;
-  }
+  const log = msg => document.getElementById("log").innerText += msg+"\n";
+  document.getElementById("log").innerText="";
+  document.getElementById("result").innerHTML="";
 
-  function toNum(v){
-    const s = String(v ?? "").replace(/,/g,"").trim();
-    // "+1234" も対応
-    const n = Number(s.replace(/^\+/,""));
-    return Number.isFinite(n) ? n : 0;
-  }
+  const strongPct = Number(document.getElementById("strongPct").value)/100;
+  const topPct = Number(document.getElementById("topPct").value)/100;
+  const limit = Number(document.getElementById("limit").value);
+  const file = document.getElementById("zipFile").files[0];
+  if(!file){ alert("ZIPを選択してください"); return; }
 
-  // 重複耐性：機種×台番号でG数最大の行を採用
-  function dedupeRows(rows, header){
-    const iMachine = header.findIndex(h => String(h).includes("機種"));
-    const iNo      = header.findIndex(h => String(h).includes("台"));
-    const iG       = header.findIndex(h => String(h).includes("G"));
-    const iDiff    = header.findIndex(h => String(h).includes("差"));
-    if(iMachine < 0 || iNo < 0 || iDiff < 0) return [];
+  log("解析開始");
 
-    const map = new Map(); // key -> {machine,no,g,diff}
-    for(let i=1;i<rows.length;i++){
-      const r = rows[i];
-      const machine = String(r[iMachine] ?? "");
-      const no = String(r[iNo] ?? "");
-      const g = iG >= 0 ? toNum(r[iG]) : 0;
-      const diff = toNum(r[iDiff]);
-      if(!machine || !no) continue;
+  const zip = await JSZip.loadAsync(file);
+  let days=[];
 
-      const key = machine + "||" + no;
-      const cur = map.get(key);
-      if(!cur || g > cur.g){
-        map.set(key, { machine, no, g, diff });
-      }
-    }
-    return [...map.values()];
-  }
+  for(const name of Object.keys(zip.files)){
+    if(!name.endsWith(".csv")) continue;
+    const text = await zip.files[name].async("string");
+    const lines = text.trim().split("\n");
+    const header = lines[0].split(",");
+    const idxMachine = header.findIndex(h=>h.includes("機種"));
+    const idxNo = header.findIndex(h=>h.includes("台番"));
+    const idxDiff = header.findIndex(h=>h.includes("差枚"));
+    if(idxMachine<0||idxNo<0||idxDiff<0) continue;
 
-  function matchMain(machine){
-    // 表記ゆれ対策：includesで判定
-    return MAIN4.find(m => machine.includes(m)) || null;
-  }
+    let total=0;
+    let machines={};
 
-  function sortByDiffDesc(a,b){ return b.diff - a.diff; }
+    for(let i=1;i<lines.length;i++){
+      const row = lines[i].split(",");
+      const machine = row[idxMachine];
+      const no = Number(row[idxNo]);
+      const diff = cleanNumber(row[idxDiff]);
+      total+=diff;
 
-  function htmlTable(headers, rows){
-    const thead = `<tr>${headers.map(h=>`<th>${h}</th>`).join("")}</tr>`;
-    const tbody = rows.map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join("")}</tr>`).join("");
-    return `<table>${thead}${tbody}</table>`;
-  }
-
-  $("runBtn").addEventListener("click", async () => {
-    const f = $("zipFile").files[0];
-    if(!f){ alert("ZIPを選択してください"); return; }
-    if(typeof JSZip === "undefined"){
-      alert("JSZipが読み込めていません。リポジトリ直下に jszip.min.js を置いて <script src=\"jszip.min.js\"></script> を使ってください。");
-      return;
-    }
-
-    const strongPct = Number($("strongPct").value || 15) / 100;
-    const topPct = Number($("topPct").value || 20) / 100;
-    const topK = Number($("topK").value || 30);
-
-    log("読み込み中…");
-
-    const zip = await JSZip.loadAsync(f);
-
-    // 日別データ
-    // {date, totalDiff, byMain: {mainName: [{no,diff,g}]}}
-    const days = [];
-
-    for(const name of Object.keys(zip.files)){
-      if(!name.endsWith(".csv")) continue;
-      const date = extractDate(name);
-      if(!date) continue;
-
-      const text = await zip.files[name].async("string");
-      const table = parseTable(text);
-      if(table.length < 2) continue;
-
-      const header = table[0];
-      const deduped = dedupeRows(table, header);
-      if(deduped.length === 0) continue;
-
-      let totalDiff = 0;
-      const byMain = {};
-      for(const row of deduped){
-        totalDiff += row.diff;
-
-        const m = matchMain(row.machine);
-        if(!m) continue;
-
-        if(!byMain[m]) byMain[m] = [];
-        byMain[m].push({ no: Number(row.no), diff: row.diff, g: row.g });
-      }
-
-      days.push({ date, totalDiff, byMain });
-    }
-
-    if(days.length === 0){
-      log("ZIP内に解析可能なCSVが見つかりませんでした。");
-      return;
-    }
-
-    // strong抽出（総差枚上位X%）
-    const byTotal = [...days].sort((a,b)=>b.totalDiff - a.totalDiff);
-    const strongN = Math.ceil(byTotal.length * strongPct);
-    const strongSet = new Set(byTotal.slice(0, strongN).map(d=>d.date));
-
-    // 集計：機種別台番号カウント / 横断カウント
-    const countsByMachine = {}; // machine -> Map(no -> {count, avgRank})
-    const totalStrongDaysWithMachine = {}; // machine -> count of strong days where machine appears
-    const overall = new Map(); // key `${machine}||${no}` -> count
-
-    // 角判定用（主軸4のみ）：その日その機種の最小台番号・最大台番号
-    let cornerHit = 0, cornerTotal = 0;
-    let evenHit = 0, oddHit = 0;
-
-    // strong日だけ回す
-    const strongDays = days.filter(d => strongSet.has(d.date));
-
-    for(const d of strongDays){
-      for(const m of MAIN4){
-        const arr = d.byMain[m] || [];
-        if(arr.length === 0) continue;
-
-        totalStrongDaysWithMachine[m] = (totalStrongDaysWithMachine[m] || 0) + 1;
-
-        // 機種内ランキング（差枚降順）
-        const ranked = [...arr].sort(sortByDiffDesc);
-
-        const takeN = Math.max(1, Math.ceil(ranked.length * topPct));
-        const top = ranked.slice(0, takeN);
-
-        // 角（その日その機種のmin/max）に入った回数
-        const nosSorted = [...ranked].map(x=>x.no).sort((a,b)=>a-b);
-        const minNo = nosSorted[0], maxNo = nosSorted[nosSorted.length-1];
-
-        // カウント
-        if(!countsByMachine[m]) countsByMachine[m] = new Map();
-
-        for(const t of top){
-          const no = t.no;
-          if(!Number.isFinite(no)) continue;
-
-          // 偶奇
-          if(no % 2 === 0) evenHit++; else oddHit++;
-
-          // 角
-          if(no === minNo || no === maxNo) cornerHit++;
-          cornerTotal++;
-
-          // 機種別
-          const map = countsByMachine[m];
-          const prev = map.get(no) || { count:0, rankSum:0 };
-          // rankは1始まり（同率は無視して単純順位）
-          const rank = ranked.findIndex(x=>x.no===no && x.diff===t.diff) + 1 || 1;
-          map.set(no, { count: prev.count+1, rankSum: prev.rankSum + rank });
-
-          // 横断
-          const key = m + "||" + no;
-          overall.set(key, (overall.get(key) || 0) + 1);
-        }
+      if(MAIN.some(m=>machine.includes(m))){
+        if(!machines[machine]) machines[machine]=[];
+        machines[machine].push({no,diff});
       }
     }
 
-    // 表示用 meta
-    const cornerRate = cornerTotal ? (cornerHit / cornerTotal * 100) : 0;
-    const evenRate = (evenHit+oddHit) ? (evenHit / (evenHit+oddHit) * 100) : 0;
+    days.push({name,total,machines});
+  }
 
-    $("meta").innerHTML = `
-      <div class="pill">総日数: ${days.length}</div>
-      <div class="pill">strong日数(${(strongPct*100).toFixed(0)}%): ${strongDays.length}</div>
-      <div class="pill">上位抽出: 機種内${(topPct*100).toFixed(0)}%</div>
-      <div class="pill">偶数率: ${evenRate.toFixed(1)}%</div>
-      <div class="pill">角率: ${cornerRate.toFixed(1)}%</div>
-    `;
+  days.sort((a,b)=>b.total-a.total);
+  const strongN = Math.floor(days.length*strongPct);
+  const strongDays = days.slice(0,strongN);
 
-    // 機種別ランキング出力
-    let byMachineHtml = "";
-    for(const m of MAIN4){
-      const map = countsByMachine[m] || new Map();
-      const denom = totalStrongDaysWithMachine[m] || 0;
+  log("総日数: "+days.length);
+  log("strong日数: "+strongDays.length);
 
-      const rows = [...map.entries()].map(([no, v]) => {
-        const rate = denom ? (v.count / denom * 100) : 0;
-        const avgRank = v.count ? (v.rankSum / v.count) : 0;
-        return { no, count: v.count, rate, avgRank };
-      }).sort((a,b)=>{
-        if(b.count !== a.count) return b.count - a.count;
-        return a.avgRank - b.avgRank; // 平均順位が小さいほど強い
-      }).slice(0, topK);
+  let machineStats={};
 
-      const table = htmlTable(
-        [`${m}`, "上位20%回数", "出現率(%)", "平均順位(小さいほど強い)"],
-        rows.map(r=>[
-          r.no,
-          r.count,
-          r.rate.toFixed(1),
-          r.avgRank.toFixed(1)
-        ])
-      );
+  for(const day of strongDays){
+    for(const m of Object.keys(day.machines)){
+      const arr = day.machines[m].sort((a,b)=>b.diff-a.diff);
+      const take = Math.max(1,Math.floor(arr.length*topPct));
+      const selected = arr.slice(0,take).filter(x=>x.diff>=3000);
 
-      byMachineHtml += `<div style="margin:12px 0">
-        <div class="pill">strong日にこの機種が存在した回数: ${denom}</div>
-        ${table}
-      </div>`;
+      for(const s of selected){
+        if(!machineStats[m]) machineStats[m]=[];
+        machineStats[m].push(s.diff);
+      }
     }
-    $("byMachine").innerHTML = byMachineHtml;
+  }
 
-    // 横断ランキング出力
-    const overallRows = [...overall.entries()].map(([key, count]) => {
-      const [m, no] = key.split("||");
-      return { m, no: Number(no), count };
-    }).sort((a,b)=>b.count - a.count).slice(0, topK);
+  let resultArr=[];
+  for(const m of Object.keys(machineStats)){
+    const list = machineStats[m];
+    const avg = list.reduce((a,b)=>a+b,0)/list.length;
+    resultArr.push({machine:m,count:list.length,avg});
+  }
 
-    $("overall").innerHTML = htmlTable(
-      ["順位", "機種", "台番号", "上位20%回数"],
-      overallRows.map((r,i)=>[i+1, r.m, r.no, r.count])
-    );
+  resultArr.sort((a,b)=>b.avg-a.avg);
 
-    log("完了。機種別ランキングと横断ランキングを確認してください。");
-  });
-})();
+  let html="<table><tr><th>機種</th><th>抽出台数</th><th>平均差枚</th></tr>";
+  for(const r of resultArr.slice(0,limit)){
+    html+=`<tr><td>${r.machine}</td><td>${r.count}</td><td>${Math.round(r.avg)}</td></tr>`;
+  }
+  html+="</table>";
+
+  document.getElementById("result").innerHTML=html;
+
+  log("完了");
+}
+
 </script>
-
 </body>
 </html>
