@@ -20,8 +20,9 @@
 <h2>VEGAS 並び/単品 判定（strong日）</h2>
 <div class="hint">
 strong（総差枚上位15%）の日だけを対象に、<br>
-強台＝差枚3000以上（8台未満なら差枚上位15から差枚1000以上で補完）で並び率を算出し、単品/混合/並びを判定します。<br>
-※強台抽出は「全機種」対象（店の配置癖を見るため）。
+強台＝差枚3000以上（8台未満なら上位15から差枚1000以上で補完）で並び率を算出し、単品/混合/並びを判定します。<br>
+※強台抽出は「全機種」対象（店の配置癖を見るため）。<br>
+※さらに「最低8台は必ず採用」で0台問題を解消しています。
 </div>
 
 <div class="row">
@@ -105,16 +106,15 @@ strong（総差枚上位15%）の日だけを対象に、<br>
   }
 
   function pickStrong(rows){
-    // 3000以上優先
-    let strong = rows.filter(x => x.diff >= STRONG_DIFF);
+    // 差枚降順でソート（後段の補完で使う）
+    const sorted = [...rows].sort((a,b)=>b.diff - a.diff);
 
-    // 8台未満なら補完（上位15から1000以上）
+    // ① 3000以上
+    let strong = sorted.filter(x => x.diff >= STRONG_DIFF);
+
+    // ② 8台未満なら、上位15から1000以上で補完
     if(strong.length < MIN_STRONG){
-      const fill = [...rows]
-        .filter(x => x.diff >= FILL_MIN)
-        .sort((a,b)=>b.diff - a.diff)
-        .slice(0, FILL_TOP_N);
-
+      const fill = sorted.filter(x => x.diff >= FILL_MIN).slice(0, FILL_TOP_N);
       const used = new Set(strong.map(x=>String(x.no)));
       for(const x of fill){
         if(strong.length >= MIN_STRONG) break;
@@ -124,6 +124,19 @@ strong（総差枚上位15%）の日だけを対象に、<br>
         used.add(key);
       }
     }
+
+    // ③ それでも足りなければ、上位8台を無条件で採用（0台問題の完全解消）
+    if(strong.length < MIN_STRONG){
+      const used = new Set(strong.map(x=>String(x.no)));
+      for(const x of sorted){
+        if(strong.length >= MIN_STRONG) break;
+        const key = String(x.no);
+        if(used.has(key)) continue;
+        strong.push(x);
+        used.add(key);
+      }
+    }
+
     return strong;
   }
 
@@ -171,18 +184,20 @@ strong（総差枚上位15%）の日だけを対象に、<br>
       let out = "";
       out += `総日数: ${days.length}\n`;
       out += `strong日数(15%): ${strongN}\n`;
-      out += `強台定義: 差枚>=${STRONG_DIFF}（<${MIN_STRONG}台なら上位${FILL_TOP_N}から差枚>=${FILL_MIN}で補完）\n\n`;
+      out += `強台定義: 差枚>=${STRONG_DIFF}（<${MIN_STRONG}台なら上位${FILL_TOP_N}から差枚>=${FILL_MIN}で補完 / さらに不足時は上位${MIN_STRONG}台を無条件採用）\n\n`;
 
       for(const d of strongDays){
         const strongRows = pickStrong(d.rows);
         const nos = strongRows.map(x => Number(x.no)).filter(n => Number.isFinite(n));
+        const maxDiff = strongRows.length ? Math.max(...strongRows.map(x=>x.diff)) : 0;
+
         const {type, rate} = classify(nos);
         const sd = stddev(nos);
 
         summary[type]++;
 
         const ratePct = (nos.length <= 1) ? 0 : (rate*100);
-        out += `${d.date} | 強台数:${nos.length} | 並び率:${ratePct.toFixed(1)}% | SD:${sd.toFixed(1)} | ${type}\n`;
+        out += `${d.date} | 強台数:${nos.length} | MAX差枚:${maxDiff} | 並び率:${ratePct.toFixed(1)}% | SD:${sd.toFixed(1)} | ${type}\n`;
       }
 
       out += `\n===== 総括（strong ${strongN}日） =====\n`;
