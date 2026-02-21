@@ -1,118 +1,220 @@
 <!doctype html>
 <html lang="ja">
 <head>
-<meta charset="utf-8">
-<title>VEGAS AT単品／並び判定エンジン</title>
-<style>
-body{font-family:sans-serif;margin:20px}
-button{padding:10px;margin:10px 0}
-pre{background:#111;color:#0f0;padding:10px;font-size:12px;white-space:pre-wrap}
-</style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>VEGAS AT単品／並び判定エンジン</title>
+  <style>
+    body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;margin:16px}
+    h2{margin:0 0 10px}
+    button,input{padding:10px;font-size:14px}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:10px 0}
+    pre{background:#111;color:#0f0;padding:10px;border-radius:10px;font-size:12px;white-space:pre-wrap}
+    .hint{color:#666;font-size:12px;line-height:1.5}
+  </style>
+
+  <!-- まずはCDNで動作確認 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
 <body>
 
-<h2>VEGAS AT単品／並び判定エンジン</h2>
-<input type="file" id="zipFile" accept=".zip">
-<br>
-<button onclick="analyze()">解析開始</button>
+  <h2>VEGAS AT単品／並び判定エンジン（ZIP）</h2>
+  <div class="hint">
+    strong（総差枚上位15%）の日だけを対象に、<br>
+    強台＝差枚3000以上（8台未満なら差枚上位15から差枚1000以上で補完）で並び率を算出し、単品/混合/並びを判定します。
+  </div>
 
-<pre id="out"></pre>
+  <div class="row">
+    <input type="file" id="zipFile" accept=".zip">
+    <button id="runBtn">解析開始</button>
+  </div>
 
-<script src="jszip.min.js"></script>
+  <pre id="out">ここに結果が出ます</pre>
 
-const MAIN = [
-"スマスロ北斗",
-"モンキーターン",
-"甲鉄城",
-"東京喰種"
-];
+<script>
+(() => {
+  // 主軸4（固定）
+  const MAIN = [
+    "スマスロ北斗",
+    "モンキーターン",
+    "甲鉄城",
+    "東京喰種"
+  ];
 
-function parseCSV(text){
- text=text.replace(/\r/g,"").replace(/^\uFEFF/,"");
- const lines=text.split("\n").filter(l=>l.trim());
- const header=lines[0].split(",");
- const idxNo=header.findIndex(h=>h.includes("台"));
- const idxDiff=header.findIndex(h=>h.includes("差"));
- const idxMachine=header.findIndex(h=>h.includes("機種"));
- let data=[];
- for(let i=1;i<lines.length;i++){
-   const row=lines[i].split(",");
-   const no=parseInt(row[idxNo]);
-   const diff=parseInt(row[idxDiff].replace(/,/g,""));
-   const machine=row[idxMachine];
-   if(isNaN(no)||isNaN(diff))continue;
-   if(MAIN.some(m=>machine.includes(m))){
-     data.push({no,diff});
-   }
- }
- return data;
-}
+  const STRONG_PCT = 0.15;
+  const STRONG_DIFF = 3000;
+  const FILL_MIN = 1000;
+  const MIN_STRONG_MACHINES = 8;
+  const FILL_TOP_N = 15;
 
-function stddev(arr){
- const avg=arr.reduce((a,b)=>a+b,0)/arr.length;
- const v=arr.reduce((a,b)=>a+(b-avg)**2,0)/arr.length;
- return Math.sqrt(v);
-}
+  const $ = (id) => document.getElementById(id);
+  const log = (s) => { $("out").textContent = s; };
 
-function classify(strongList){
- const sorted=[...strongList].sort((a,b)=>a-b);
- let adjacent=0;
- for(let i=0;i<sorted.length-1;i++){
-   if(sorted[i+1]===sorted[i]+1)adjacent++;
- }
- const rate=adjacent/strongList.length;
- if(rate<0.15)return "単品型";
- if(rate<0.30)return "混合型";
- return "並び型";
-}
+  function extractDate(name){
+    const m = name.match(/\d{4}-\d{2}-\d{2}/);
+    return m ? m[0] : null;
+  }
 
-async function analyze(){
- const file=document.getElementById("zipFile").files[0];
- if(!file){alert("ZIPを選択");return;}
- const zip=await JSZip.loadAsync(file);
- let results=[];
- let strongDays=[];
- 
- for(const name in zip.files){
-   if(!name.endsWith(".csv"))continue;
-   const text=await zip.files[name].async("string");
-   const data=parseCSV(text);
-   if(data.length===0)continue;
-   const total=data.reduce((a,b)=>a+b.diff,0);
-   results.push({name,total,data});
- }
- 
- results.sort((a,b)=>b.total-a.total);
- const strongCount=Math.floor(results.length*0.15);
- strongDays=results.slice(0,strongCount);
- 
- let summary={単品型:0,混合型:0,並び型:0};
- let out="";
- 
- strongDays.forEach(day=>{
-   let strong=day.data.filter(d=>d.diff>=3000);
-   if(strong.length<8){
-     const fill=[...day.data]
-       .filter(d=>d.diff>=1000)
-       .sort((a,b)=>b.diff-a.diff);
-     strong=fill.slice(0,8);
-   }
-   const nos=strong.map(d=>d.no);
-   const type=classify(nos);
-   summary[type]++;
-   out+=`${day.name} | 強台数:${nos.length} | 型:${type}\n`;
- });
- 
- out+="\n===== 総括 =====\n";
- const total=strongDays.length;
- Object.keys(summary).forEach(k=>{
-   out+=`${k}: ${summary[k]}日 (${(summary[k]/total*100).toFixed(1)}%)\n`;
- });
- 
- document.getElementById("out").textContent=out;
-}
+  function toNum(v){
+    const s = String(v ?? "").replace(/,/g,"").trim();
+    const n = Number(s);
+    return Number.isFinite(n) ? n : 0;
+  }
 
+  // 重複耐性：機種×台番号でG数最大の行を採用
+  function dedupeRows(rows, header){
+    const iMachine = header.findIndex(h => String(h).includes("機種"));
+    const iNo      = header.findIndex(h => String(h).includes("台"));
+    const iG       = header.findIndex(h => String(h).includes("G"));
+    const iDiff    = header.findIndex(h => String(h).includes("差"));
+
+    if(iMachine<0 || iNo<0 || iDiff<0) return [];
+
+    const map = new Map(); // key -> {machine,no,g,diff}
+    for(let i=1;i<rows.length;i++){
+      const r = rows[i];
+      const machine = String(r[iMachine] ?? "");
+      const no = String(r[iNo] ?? "");
+      const g = iG>=0 ? toNum(r[iG]) : 0;
+      const diff = toNum(r[iDiff]);
+      if(!machine || !no) continue;
+
+      const key = machine + "||" + no;
+      const cur = map.get(key);
+      if(!cur || g > cur.g){
+        map.set(key, {machine,no,g,diff});
+      }
+    }
+    return [...map.values()];
+  }
+
+  function parseCSV(text){
+    text = text.replace(/^\uFEFF/,"").replace(/\r/g,"");
+    const delim = text.includes("\t") ? "\t" : ",";
+    const lines = text.split("\n").filter(l => l.trim().length);
+    const rows = lines.map(l => l.replace(/"/g,"").split(delim));
+    return rows;
+  }
+
+  function stddev(arr){
+    if(arr.length<=1) return 0;
+    const avg = arr.reduce((a,b)=>a+b,0)/arr.length;
+    const v = arr.reduce((a,b)=>a+(b-avg)**2,0)/arr.length;
+    return Math.sqrt(v);
+  }
+
+  function classifyByAdjacency(nos){
+    const s = [...nos].sort((a,b)=>a-b);
+    let adj=0;
+    for(let i=0;i<s.length-1;i++){
+      if(s[i+1] === s[i] + 1) adj++;
+    }
+    const rate = adj / s.length;
+    if(rate >= 0.30) return {type:"並び型", rate};
+    if(rate <= 0.15) return {type:"単品型", rate};
+    return {type:"混合型", rate};
+  }
+
+  function pickStrongMachines(machineRows){
+    // 3000以上優先
+    let strong = machineRows.filter(x => x.diff >= STRONG_DIFF);
+
+    if(strong.length < MIN_STRONG_MACHINES){
+      // 補完：差枚上位15（ただし1000以上）
+      const fill = [...machineRows]
+        .filter(x => x.diff >= FILL_MIN)
+        .sort((a,b)=>b.diff - a.diff)
+        .slice(0, FILL_TOP_N);
+
+      // 既存番号重複排除しつつ、最低8台まで
+      const used = new Set(strong.map(x => x.no));
+      for(const x of fill){
+        if(strong.length >= MIN_STRONG_MACHINES) break;
+        if(used.has(x.no)) continue;
+        strong.push(x);
+        used.add(x.no);
+      }
+    }
+    return strong;
+  }
+
+  async function run(){
+    try{
+      const f = $("zipFile").files[0];
+      if(!f){ alert("ZIPを選択してください"); return; }
+      if(typeof JSZip === "undefined"){
+        alert("JSZipが読み込めていません（CDNブロックの可能性）。次の手順でjszip.min.jsを同梱します。");
+        return;
+      }
+
+      log("読み込み中…");
+
+      const zip = await JSZip.loadAsync(f);
+      const days = [];
+
+      for(const name of Object.keys(zip.files)){
+        if(!name.endsWith(".csv")) continue;
+        const date = extractDate(name);
+        if(!date) continue;
+
+        const text = await zip.files[name].async("string");
+        const rows = parseCSV(text);
+        if(rows.length < 2) continue;
+
+        const header = rows[0];
+        const deduped = dedupeRows(rows, header);
+
+        // 主軸4だけ抽出（AT単品/並び判定なので、主軸の台番号分布を見たい）
+        const mainRows = deduped.filter(x => MAIN.some(m => x.machine.includes(m)));
+
+        const total = deduped.reduce((a,b)=>a+b.diff,0);
+        days.push({date, name, total, mainRows});
+      }
+
+      if(days.length === 0){
+        log("ZIP内にCSVが見つかりませんでした。");
+        return;
+      }
+
+      // strong抽出（総差枚上位15%）
+      const byTotal = [...days].sort((a,b)=>b.total - a.total);
+      const strongN = Math.ceil(byTotal.length * STRONG_PCT);
+      const strongDays = byTotal.slice(0, strongN);
+
+      // 各strong日で並び判定
+      const summary = {単品型:0, 混合型:0, 並び型:0};
+      let out = "";
+      out += `総日数: ${days.length}\n`;
+      out += `strong日数(15%): ${strongN}\n`;
+      out += `強台定義: 差枚>=${STRONG_DIFF}（<${MIN_STRONG_MACHINES}台なら上位${FILL_TOP_N}から差枚>=${FILL_MIN}で補完）\n\n`;
+
+      for(const d of strongDays){
+        const strongMachines = pickStrongMachines(d.mainRows);
+        const nos = strongMachines.map(x => Number(x.no)).filter(n => Number.isFinite(n));
+        const diffs = strongMachines.map(x => x.diff);
+        const {type, rate} = classifyByAdjacency(nos);
+
+        const sd = stddev(nos);
+        summary[type]++;
+
+        out += `${d.date} | 強台数:${nos.length} | 並び率:${(rate*100).toFixed(1)}% | SD:${sd.toFixed(1)} | ${type}\n`;
+      }
+
+      out += `\n===== 総括（strong ${strongN}日） =====\n`;
+      out += `単品型: ${summary["単品型"]}日 (${(summary["単品型"]/strongN*100).toFixed(1)}%)\n`;
+      out += `混合型: ${summary["混合型"]}日 (${(summary["混合型"]/strongN*100).toFixed(1)}%)\n`;
+      out += `並び型: ${summary["並び型"]}日 (${(summary["並び型"]/strongN*100).toFixed(1)}%)\n`;
+
+      log(out);
+    }catch(e){
+      log("エラー:\n" + (e && e.stack ? e.stack : String(e)));
+      alert("エラーが出ました。画面下のエラーログを貼ってください。");
+    }
+  }
+
+  $("runBtn").addEventListener("click", run);
+})();
 </script>
+
 </body>
 </html>
-
