@@ -1,230 +1,155 @@
-<!doctype html>
-<html lang="ja">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>VEGAS 並び/単品 判定（strong日）</title>
-<style>
-  body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;margin:16px}
-  h2{margin:0 0 10px}
-  button,input{padding:10px;font-size:14px}
-  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:10px 0}
-  pre{background:#111;color:#0f0;padding:10px;border-radius:10px;font-size:12px;white-space:pre-wrap}
-  .hint{color:#666;font-size:12px;line-height:1.5}
-</style>
-
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-</head>
-<body>
-
-<h2>VEGAS 並び/単品 判定（strong日）</h2>
-<div class="hint">
-strong（総差枚上位15%）の日だけを対象に、<br>
-強台＝差枚3000以上（8台未満なら差枚上位15から差枚1000以上で補完）で並び率を算出し、単品/混合/並びを判定します。<br>
-※強台抽出は「全機種」対象（店の配置癖を見るため）。<br>
-※桁区切り「1,716」等のカンマを自動除去してから解析します。
-</div>
-
-<div class="row">
-  <input type="file" id="zipFile" accept=".zip">
-  <button id="runBtn">解析開始</button>
-</div>
-
-<pre id="out">ここに結果が出ます</pre>
-
 <script>
-(() => {
-  const STRONG_PCT = 0.15;
-  const STRONG_DIFF = 3000;
-  const FILL_MIN = 1000;
-  const MIN_STRONG = 8;
-  const FILL_TOP_N = 15;
-
-  const $ = (id) => document.getElementById(id);
-  const log = (s) => { $("out").textContent = s; };
-
-  function extractDate(name){
-    const m = name.match(/\d{4}-\d{2}-\d{2}/);
-    return m ? m[0] : null;
-  }
-  function toNum(v){
-    const s = String(v ?? "").replace(/,/g,"").trim();
-    const n = Number(s);
-    return Number.isFinite(n) ? n : 0;
+async function analyzeZip() {
+  const file = document.getElementById("zipFile").files[0];
+  if (!file) {
+    alert("ZIPファイルを選択してください");
+    return;
   }
 
-  // ★重要：桁区切りのカンマだけ除去してから split する
-  // 例: "7,099" -> "7099" / "+1,716" -> "+1716"
-  function normalizeThousandsCommas(text){
-    // 数字の後ろにカンマ、続いて3桁、境界（または非数字）…だけを消す
-    // 1,234 / +12,345 / 123,456 などに効く
-    return text.replace(/(\d),(?=\d{3}\b)/g, "$1");
+  const strongPercent = 15;
+  const zip = await JSZip.loadAsync(file);
+  const files = Object.keys(zip.files).filter(f => f.endsWith(".csv"));
+
+  let daily = [];
+
+  // ===============================
+  // 安全な数値変換（超重要）
+  // ===============================
+  function safeNumber(v) {
+    if (!v) return 0;
+    let s = String(v);
+
+    // 桁区切りカンマ除去
+    s = s.replace(/(\d),(?=\d{3}(\D|$))/g, "$1");
+
+    // 数字とマイナス以外を削除
+    s = s.replace(/[^0-9\-]/g, "");
+
+    const n = parseInt(s, 10);
+    if (isNaN(n)) return 0;
+
+    // 異常値カット（±20000以上は壊れデータ）
+    if (Math.abs(n) > 20000) return 0;
+
+    return n;
   }
 
-  function parseTable(text){
-    text = text.replace(/^\uFEFF/,"").replace(/\r/g,"");
-    text = normalizeThousandsCommas(text);
+  for (let fname of files) {
+    const text = await zip.files[fname].async("text");
 
-    const delim = text.includes("\t") ? "\t" : ",";
-    const lines = text.split("\n").filter(l => l.trim().length);
-    const rows = lines.map(l => l.replace(/"/g,"").split(delim));
-    return rows;
-  }
+    const delimiter = text.includes("\t") ? "\t" : ",";
+    const lines = text.split("\n").filter(l => l.trim());
 
-  // 重複耐性：機種×台番号でG数最大行
-  function dedupeRows(rows, header){
-    const iMachine = header.findIndex(h => String(h).includes("機種"));
-    const iNo      = header.findIndex(h => String(h).includes("台"));
-    const iG       = header.findIndex(h => String(h).includes("G"));
-    const iDiff    = header.findIndex(h => String(h).includes("差"));
+    if (lines.length < 2) continue;
 
-    if(iMachine<0 || iNo<0 || iDiff<0) return [];
+    const header = lines[0].split(delimiter);
 
-    const map = new Map(); // key -> {machine,no,g,diff}
-    for(let i=1;i<rows.length;i++){
-      const r = rows[i];
-      const machine = String(r[iMachine] ?? "");
-      const no = String(r[iNo] ?? "");
-      const g = iG>=0 ? toNum(r[iG]) : 0;
-      const diff = toNum(r[iDiff]);
-      if(!machine || !no) continue;
+    const diffIndex = header.findIndex(h => h.includes("差枚"));
+    const numIndex = header.findIndex(h => h.includes("台"));
 
-      const key = machine + "||" + no;
-      const cur = map.get(key);
-      if(!cur || g > cur.g){
-        map.set(key, {machine,no,g,diff});
-      }
-    }
-    return [...map.values()];
-  }
+    if (diffIndex < 0 || numIndex < 0) continue;
 
-  function stddev(arr){
-    if(arr.length<=1) return 0;
-    const avg = arr.reduce((a,b)=>a+b,0)/arr.length;
-    const v = arr.reduce((a,b)=>a+(b-avg)**2,0)/arr.length;
-    return Math.sqrt(v);
-  }
+    let total = 0;
+    let machines = [];
 
-  function classify(nos){
-    const s = [...nos].sort((a,b)=>a-b);
-    let adj=0;
-    for(let i=0;i<s.length-1;i++){
-      if(s[i+1] === s[i] + 1) adj++;
-    }
-    const rate = (s.length>0) ? (adj / s.length) : 0;
-    if(rate >= 0.30) return {type:"並び型", rate};
-    if(rate <= 0.15) return {type:"単品型", rate};
-    return {type:"混合型", rate};
-  }
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].split(delimiter);
+      if (cols.length <= diffIndex) continue;
 
-  function pickStrong(rows){
-    const sorted = [...rows].sort((a,b)=>b.diff - a.diff);
+      const diff = safeNumber(cols[diffIndex]);
+      const num = parseInt(cols[numIndex], 10);
 
-    // ① 3000以上
-    let strong = sorted.filter(x => x.diff >= STRONG_DIFF);
-
-    // ② 8台未満なら、上位15から1000以上で補完
-    if(strong.length < MIN_STRONG){
-      const fill = sorted.filter(x => x.diff >= FILL_MIN).slice(0, FILL_TOP_N);
-      const used = new Set(strong.map(x=>String(x.no)));
-      for(const x of fill){
-        if(strong.length >= MIN_STRONG) break;
-        const key = String(x.no);
-        if(used.has(key)) continue;
-        strong.push(x);
-        used.add(key);
+      if (!isNaN(num)) {
+        total += diff;
+        machines.push({ num, diff });
       }
     }
 
-    // ③ それでも足りなければ上位8を無条件採用
-    if(strong.length < MIN_STRONG){
-      const used = new Set(strong.map(x=>String(x.no)));
-      for(const x of sorted){
-        if(strong.length >= MIN_STRONG) break;
-        const key = String(x.no);
-        if(used.has(key)) continue;
-        strong.push(x);
-        used.add(key);
-      }
+    daily.push({
+      date: fname.replace(".csv", ""),
+      total,
+      machines
+    });
+  }
+
+  // ===============================
+  // strong抽出（総差枚上位15%）
+  // ===============================
+  daily.sort((a, b) => b.total - a.total);
+
+  const strongCount = Math.floor(daily.length * strongPercent / 100);
+  const strongDays = daily.slice(0, strongCount);
+
+  console.log("総日数:", daily.length);
+  console.log("strong日数:", strongDays.length);
+
+  // ===============================
+  // 並び判定
+  // ===============================
+  function getStrongMachines(day) {
+    let strong = day.machines.filter(m => m.diff >= 3000);
+
+    if (strong.length < 8) {
+      const sorted = [...day.machines]
+        .sort((a, b) => b.diff - a.diff)
+        .slice(0, 15)
+        .filter(m => m.diff >= 1000);
+
+      strong = sorted;
     }
+
+    if (strong.length < 8) {
+      strong = [...day.machines]
+        .sort((a, b) => b.diff - a.diff)
+        .slice(0, 8);
+    }
+
     return strong;
   }
 
-  async function run(){
-    try{
-      const f = $("zipFile").files[0];
-      if(!f){ alert("ZIPを選択してください"); return; }
-      if(typeof JSZip === "undefined"){
-        alert("JSZipが読み込めていません（CDNブロックの可能性）。");
-        return;
+  let result = "";
+
+  let single = 0;
+  let mix = 0;
+  let line = 0;
+
+  for (let day of strongDays) {
+    const strong = getStrongMachines(day);
+
+    if (strong.length === 0) continue;
+
+    strong.sort((a, b) => a.num - b.num);
+
+    let adjacent = 0;
+    for (let i = 0; i < strong.length - 1; i++) {
+      if (strong[i + 1].num === strong[i].num + 1) {
+        adjacent++;
       }
-
-      log("読み込み中…");
-
-      const zip = await JSZip.loadAsync(f);
-      const days = [];
-
-      for(const name of Object.keys(zip.files)){
-        if(!name.endsWith(".csv")) continue;
-        const date = extractDate(name);
-        if(!date) continue;
-
-        const textRaw = await zip.files[name].async("string");
-        const rows = parseTable(textRaw);
-        if(rows.length < 2) continue;
-
-        const header = rows[0];
-        const deduped = dedupeRows(rows, header);
-
-        const total = deduped.reduce((a,b)=>a+b.diff,0);
-        days.push({date, name, total, rows: deduped});
-      }
-
-      if(days.length === 0){
-        log("ZIP内にCSVが見つかりませんでした。");
-        return;
-      }
-
-      // strong抽出（総差枚上位15%）
-      const byTotal = [...days].sort((a,b)=>b.total - a.total);
-      const strongN = Math.ceil(byTotal.length * STRONG_PCT);
-      const strongDays = byTotal.slice(0, strongN);
-
-      const summary = {単品型:0, 混合型:0, 並び型:0};
-      let out = "";
-      out += `総日数: ${days.length}\n`;
-      out += `strong日数(15%): ${strongN}\n`;
-      out += `強台定義: 差枚>=${STRONG_DIFF}（<${MIN_STRONG}台なら上位${FILL_TOP_N}から差枚>=${FILL_MIN}で補完 / 不足時は上位${MIN_STRONG}台を無条件採用）\n\n`;
-
-      for(const d of strongDays){
-        const strongRows = pickStrong(d.rows);
-        const nos = strongRows.map(x => Number(x.no)).filter(n => Number.isFinite(n));
-        const maxDiff = strongRows.length ? Math.max(...strongRows.map(x=>x.diff)) : 0;
-
-        const {type, rate} = classify(nos);
-        const sd = stddev(nos);
-
-        summary[type]++;
-
-        const ratePct = (nos.length <= 1) ? 0 : (rate*100);
-        out += `${d.date} | 強台数:${nos.length} | MAX差枚:${maxDiff} | 並び率:${ratePct.toFixed(1)}% | SD:${sd.toFixed(1)} | ${type}\n`;
-      }
-
-      out += `\n===== 総括（strong ${strongN}日） =====\n`;
-      out += `単品型: ${summary["単品型"]}日 (${(summary["単品型"]/strongN*100).toFixed(1)}%)\n`;
-      out += `混合型: ${summary["混合型"]}日 (${(summary["混合型"]/strongN*100).toFixed(1)}%)\n`;
-      out += `並び型: ${summary["並び型"]}日 (${(summary["並び型"]/strongN*100).toFixed(1)}%)\n`;
-
-      log(out);
-    }catch(e){
-      log("エラー:\n" + (e && e.stack ? e.stack : String(e)));
-      alert("エラーが出ました。画面下のエラーログを貼ってください。");
     }
+
+    const rate = (adjacent / strong.length) * 100;
+
+    let type = "単品型";
+    if (rate >= 40) {
+      type = "並び型";
+      line++;
+    } else if (rate >= 20) {
+      type = "混合型";
+      mix++;
+    } else {
+      single++;
+    }
+
+    const maxDiff = Math.max(...strong.map(m => m.diff));
+
+    result += `${day.date} | 強台数:${strong.length} | MAX差枚:${maxDiff} | 並び率:${rate.toFixed(1)}% | ${type}\n`;
   }
 
-  $("runBtn").addEventListener("click", run);
-})();
-</script>
+  result += `\n===== 総括 =====\n`;
+  result += `単品型: ${single}\n`;
+  result += `混合型: ${mix}\n`;
+  result += `並び型: ${line}\n`;
 
-</body>
-</html>
+  document.getElementById("output").textContent = result;
+}
+</script>
