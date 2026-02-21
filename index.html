@@ -2,166 +2,117 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>VEGAS 強日テンプレート出力</title>
+<title>VEGAS AT単品／並び判定エンジン</title>
 <style>
 body{font-family:sans-serif;margin:20px}
-button{padding:10px;margin:5px 0}
-textarea{width:100%;height:220px;margin-top:10px}
-.ok{color:#2e7d32;font-weight:bold}
-.ng{color:#c62828;font-weight:bold}
+button{padding:10px;margin:10px 0}
+pre{background:#111;color:#0f0;padding:10px;font-size:12px;white-space:pre-wrap}
 </style>
 </head>
 <body>
 
-<h2>VEGAS 強日テンプレート出力</h2>
+<h2>VEGAS AT単品／並び判定エンジン</h2>
+<input type="file" id="zipFile" accept=".zip">
+<br>
+<button onclick="analyze()">解析開始</button>
 
-<label>日付:
-<input type="date" id="bizDate">
-</label>
+<pre id="out"></pre>
 
-<label>
-<input type="checkbox" id="lineFlag"> LINE煽りあり
-</label>
-
-<p>前日CSV</p>
-<input type="file" id="yFile" accept=".csv">
-<button onclick="analyzeDay()">解析＆出力</button>
-
-<hr>
-
-<div id="status"></div>
-
-<textarea id="outputBox" placeholder="ここにテンプレートが出力されます"></textarea>
-
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script>
 
-const MAIN_AT=[
-"モンキーターンV",
-"東京喰種",
-"甲鉄城のカバネリ",
-"スマスロ北斗の拳",
-"新鬼武者"
+const MAIN = [
+"スマスロ北斗",
+"モンキーターン",
+"甲鉄城",
+"東京喰種"
 ];
 
 function parseCSV(text){
-  text=text.replace(/^\uFEFF/,"").replace(/\r/g,"");
-  const lines=text.split("\n").filter(l=>l.trim());
-  const delim=text.includes("\t")?"\t":",";
-  return lines.map(l=>l.replace(/"/g,"").split(delim));
+ text=text.replace(/\r/g,"").replace(/^\uFEFF/,"");
+ const lines=text.split("\n").filter(l=>l.trim());
+ const header=lines[0].split(",");
+ const idxNo=header.findIndex(h=>h.includes("台"));
+ const idxDiff=header.findIndex(h=>h.includes("差"));
+ const idxMachine=header.findIndex(h=>h.includes("機種"));
+ let data=[];
+ for(let i=1;i<lines.length;i++){
+   const row=lines[i].split(",");
+   const no=parseInt(row[idxNo]);
+   const diff=parseInt(row[idxDiff].replace(/,/g,""));
+   const machine=row[idxMachine];
+   if(isNaN(no)||isNaN(diff))continue;
+   if(MAIN.some(m=>machine.includes(m))){
+     data.push({no,diff});
+   }
+ }
+ return data;
 }
 
-function toNum(v){
-  const s=String(v||"").replace(/,/g,"").trim();
-  return s?Number(s):0;
+function stddev(arr){
+ const avg=arr.reduce((a,b)=>a+b,0)/arr.length;
+ const v=arr.reduce((a,b)=>a+(b-avg)**2,0)/arr.length;
+ return Math.sqrt(v);
 }
 
-function normalize(rows){
-  const header=rows[0];
-  const iMachine=header.findIndex(h=>h.includes("機種"));
-  const iNo=header.findIndex(h=>h.includes("台"));
-  const iG=header.findIndex(h=>h.includes("G"));
-  const iDiff=header.findIndex(h=>h.includes("差"));
-  if(iNo<0||iDiff<0) return null;
-
-  const out=[];
-  for(let i=1;i<rows.length;i++){
-    const r=rows[i];
-    out.push({
-      machine:r[iMachine],
-      no:toNum(r[iNo]),
-      g:toNum(r[iG]),
-      diff:toNum(r[iDiff])
-    });
-  }
-  return out;
+function classify(strongList){
+ const sorted=[...strongList].sort((a,b)=>a-b);
+ let adjacent=0;
+ for(let i=0;i<sorted.length-1;i++){
+   if(sorted[i+1]===sorted[i]+1)adjacent++;
+ }
+ const rate=adjacent/strongList.length;
+ if(rate<0.15)return "単品型";
+ if(rate<0.30)return "混合型";
+ return "並び型";
 }
 
-async function analyzeDay(){
-
-  const date=document.getElementById("bizDate").value;
-  const file=document.getElementById("yFile").files[0];
-  if(!file){alert("CSV選択");return;}
-
-  const text=await file.text();
-  const rows=parseCSV(text);
-  const data=normalize(rows);
-  if(!data){alert("列検出失敗");return;}
-
-  const mainOnly=data.filter(d=>
-    MAIN_AT.some(at=>d.machine.includes(at))
-  );
-
-  const mainMachines=new Set(
-    mainOnly.filter(d=>d.diff>0).map(d=>d.machine)
-  );
-
-  const mainCount=mainMachines.size;
-
-  const avgMainDiff = mainOnly.length
-    ? mainOnly.reduce((a,b)=>a+b.diff,0)/mainOnly.length
-    : 0;
-
-  const totalDiff = data.reduce((a,b)=>a+b.diff,0);
-
-  let score=0;
-  let detail=[];
-
-  if(mainCount>=3){ score+=2; detail.push("主力3機種以上 +2"); }
-  if(avgMainDiff>=200){ score+=2; detail.push("主力平均+200以上 +2"); }
-  if(totalDiff<=-50000){ score+=1; detail.push("前日大回収 +1"); }
-  if(document.getElementById("lineFlag").checked){
-    score+=1; detail.push("LINE煽り +1");
-  }
-
-  let strong=false;
-  if(score>=4) strong=true;
-
-  let statusText = strong ? "強日濃厚" : "通常濃厚";
-
-  let pred=[];
-  if(strong){
-    const strongSet=new Set(
-      mainOnly.filter(d=>d.diff>=3000).map(d=>d.no)
-    );
-
-    pred=mainOnly.map(d=>{
-      let s=0;
-      if(d.g>=3500&&d.diff<0) s+=8;
-      if(strongSet.has(d.no-1)||strongSet.has(d.no+1)) s+=5;
-      return {...d,score:s};
-    });
-
-    pred.sort((a,b)=>b.score-a.score);
-    pred=pred.slice(0,10);
-  }
-
-  // テンプレート生成
-  let output="";
-  output+=`【VEGAS北山形 ${date}】\n\n`;
-  output+=`■ 強日判定\n`;
-  output+=`${statusText}（スコア:${score}）\n\n`;
-
-  output+=`■ 判定内訳\n`;
-  detail.forEach(d=>output+=`・${d}\n`);
-
-  if(strong){
-    output+=`\n■ 狙い台候補\n`;
-    pred.forEach((p,i)=>{
-      output+=`${i+1}位 台${p.no}（${p.machine}）\n`;
-    });
-  }else{
-    output+=`\n■ 狙い台候補\n見送り推奨\n`;
-  }
-
-  document.getElementById("status").innerHTML =
-    strong ? "<span class='ok'>強日判定完了</span>"
-           : "<span class='ng'>通常日判定</span>";
-
-  document.getElementById("outputBox").value=output;
+async function analyze(){
+ const file=document.getElementById("zipFile").files[0];
+ if(!file){alert("ZIPを選択");return;}
+ const zip=await JSZip.loadAsync(file);
+ let results=[];
+ let strongDays=[];
+ 
+ for(const name in zip.files){
+   if(!name.endsWith(".csv"))continue;
+   const text=await zip.files[name].async("string");
+   const data=parseCSV(text);
+   if(data.length===0)continue;
+   const total=data.reduce((a,b)=>a+b.diff,0);
+   results.push({name,total,data});
+ }
+ 
+ results.sort((a,b)=>b.total-a.total);
+ const strongCount=Math.floor(results.length*0.15);
+ strongDays=results.slice(0,strongCount);
+ 
+ let summary={単品型:0,混合型:0,並び型:0};
+ let out="";
+ 
+ strongDays.forEach(day=>{
+   let strong=day.data.filter(d=>d.diff>=3000);
+   if(strong.length<8){
+     const fill=[...day.data]
+       .filter(d=>d.diff>=1000)
+       .sort((a,b)=>b.diff-a.diff);
+     strong=fill.slice(0,8);
+   }
+   const nos=strong.map(d=>d.no);
+   const type=classify(nos);
+   summary[type]++;
+   out+=`${day.name} | 強台数:${nos.length} | 型:${type}\n`;
+ });
+ 
+ out+="\n===== 総括 =====\n";
+ const total=strongDays.length;
+ Object.keys(summary).forEach(k=>{
+   out+=`${k}: ${summary[k]}日 (${(summary[k]/total*100).toFixed(1)}%)\n`;
+ });
+ 
+ document.getElementById("out").textContent=out;
 }
 
 </script>
-
 </body>
 </html>
