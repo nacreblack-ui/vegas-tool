@@ -20,9 +20,9 @@
 <h2>VEGAS 並び/単品 判定（strong日）</h2>
 <div class="hint">
 strong（総差枚上位15%）の日だけを対象に、<br>
-強台＝差枚3000以上（8台未満なら上位15から差枚1000以上で補完）で並び率を算出し、単品/混合/並びを判定します。<br>
+強台＝差枚3000以上（8台未満なら差枚上位15から差枚1000以上で補完）で並び率を算出し、単品/混合/並びを判定します。<br>
 ※強台抽出は「全機種」対象（店の配置癖を見るため）。<br>
-※さらに「最低8台は必ず採用」で0台問題を解消しています。
+※桁区切り「1,716」等のカンマを自動除去してから解析します。
 </div>
 
 <div class="row">
@@ -52,11 +52,23 @@ strong（総差枚上位15%）の日だけを対象に、<br>
     const n = Number(s);
     return Number.isFinite(n) ? n : 0;
   }
-  function parseCSV(text){
+
+  // ★重要：桁区切りのカンマだけ除去してから split する
+  // 例: "7,099" -> "7099" / "+1,716" -> "+1716"
+  function normalizeThousandsCommas(text){
+    // 数字の後ろにカンマ、続いて3桁、境界（または非数字）…だけを消す
+    // 1,234 / +12,345 / 123,456 などに効く
+    return text.replace(/(\d),(?=\d{3}\b)/g, "$1");
+  }
+
+  function parseTable(text){
     text = text.replace(/^\uFEFF/,"").replace(/\r/g,"");
+    text = normalizeThousandsCommas(text);
+
     const delim = text.includes("\t") ? "\t" : ",";
     const lines = text.split("\n").filter(l => l.trim().length);
-    return lines.map(l => l.replace(/"/g,"").split(delim));
+    const rows = lines.map(l => l.replace(/"/g,"").split(delim));
+    return rows;
   }
 
   // 重複耐性：機種×台番号でG数最大行
@@ -106,7 +118,6 @@ strong（総差枚上位15%）の日だけを対象に、<br>
   }
 
   function pickStrong(rows){
-    // 差枚降順でソート（後段の補完で使う）
     const sorted = [...rows].sort((a,b)=>b.diff - a.diff);
 
     // ① 3000以上
@@ -125,7 +136,7 @@ strong（総差枚上位15%）の日だけを対象に、<br>
       }
     }
 
-    // ③ それでも足りなければ、上位8台を無条件で採用（0台問題の完全解消）
+    // ③ それでも足りなければ上位8を無条件採用
     if(strong.length < MIN_STRONG){
       const used = new Set(strong.map(x=>String(x.no)));
       for(const x of sorted){
@@ -136,7 +147,6 @@ strong（総差枚上位15%）の日だけを対象に、<br>
         used.add(key);
       }
     }
-
     return strong;
   }
 
@@ -159,8 +169,8 @@ strong（総差枚上位15%）の日だけを対象に、<br>
         const date = extractDate(name);
         if(!date) continue;
 
-        const text = await zip.files[name].async("string");
-        const rows = parseCSV(text);
+        const textRaw = await zip.files[name].async("string");
+        const rows = parseTable(textRaw);
         if(rows.length < 2) continue;
 
         const header = rows[0];
@@ -184,7 +194,7 @@ strong（総差枚上位15%）の日だけを対象に、<br>
       let out = "";
       out += `総日数: ${days.length}\n`;
       out += `strong日数(15%): ${strongN}\n`;
-      out += `強台定義: 差枚>=${STRONG_DIFF}（<${MIN_STRONG}台なら上位${FILL_TOP_N}から差枚>=${FILL_MIN}で補完 / さらに不足時は上位${MIN_STRONG}台を無条件採用）\n\n`;
+      out += `強台定義: 差枚>=${STRONG_DIFF}（<${MIN_STRONG}台なら上位${FILL_TOP_N}から差枚>=${FILL_MIN}で補完 / 不足時は上位${MIN_STRONG}台を無条件採用）\n\n`;
 
       for(const d of strongDays){
         const strongRows = pickStrong(d.rows);
