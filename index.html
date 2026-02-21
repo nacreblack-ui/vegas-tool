@@ -1,4 +1,35 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>VEGAS 並び/単品 判定（strong日）</title>
+<script src="jszip.min.js"></script>
+<style>
+body { font-family: monospace; background:#111; color:#eee; padding:20px; }
+button { padding:10px 20px; font-size:16px; margin-top:10px; }
+input { margin-top:10px; }
+pre { background:#000; padding:15px; white-space:pre-wrap; }
+</style>
+</head>
+<body>
+
+<h2>VEGAS 並び/単品 判定（strong日）</h2>
+
+<p>
+strong（総差枚上位15%）の日だけを対象に、<br>
+強台＝差枚3000以上（8台未満なら上位15から差枚1000以上で補完）で並び率を算出し、単品/混合/並びを判定します。<br>
+※強台抽出は「全機種」対象（店の配置癖を見るため）。<br>
+※桁区切りや異常値は自動補正します。
+</p>
+
+<input type="file" id="zipFile" accept=".zip">
+<br>
+<button onclick="analyzeZip()">解析開始</button>
+
+<pre id="output"></pre>
+
 <script>
+
 async function analyzeZip() {
   const file = document.getElementById("zipFile").files[0];
   if (!file) {
@@ -13,22 +44,22 @@ async function analyzeZip() {
   let daily = [];
 
   // ===============================
-  // 安全な数値変換（超重要）
+  // 安全な数値変換
   // ===============================
   function safeNumber(v) {
     if (!v) return 0;
     let s = String(v);
 
-    // 桁区切りカンマ除去
+    // 桁区切り除去
     s = s.replace(/(\d),(?=\d{3}(\D|$))/g, "$1");
 
-    // 数字とマイナス以外を削除
+    // 数字とマイナスのみ残す
     s = s.replace(/[^0-9\-]/g, "");
 
     const n = parseInt(s, 10);
     if (isNaN(n)) return 0;
 
-    // 異常値カット（±20000以上は壊れデータ）
+    // 異常値カット（±20000以上は壊れ）
     if (Math.abs(n) > 20000) return 0;
 
     return n;
@@ -80,12 +111,11 @@ async function analyzeZip() {
   const strongCount = Math.floor(daily.length * strongPercent / 100);
   const strongDays = daily.slice(0, strongCount);
 
-  console.log("総日数:", daily.length);
-  console.log("strong日数:", strongDays.length);
+  let result = "";
+  result += "総日数: " + daily.length + "\n";
+  result += "strong日数(15%): " + strongDays.length + "\n";
+  result += "強台定義: 差枚>=3000（不足時補完あり）\n\n";
 
-  // ===============================
-  // 並び判定
-  // ===============================
   function getStrongMachines(day) {
     let strong = day.machines.filter(m => m.diff >= 3000);
 
@@ -107,13 +137,12 @@ async function analyzeZip() {
     return strong;
   }
 
-  let result = "";
-
   let single = 0;
   let mix = 0;
   let line = 0;
 
   for (let day of strongDays) {
+
     const strong = getStrongMachines(day);
 
     if (strong.length === 0) continue;
@@ -145,11 +174,15 @@ async function analyzeZip() {
     result += `${day.date} | 強台数:${strong.length} | MAX差枚:${maxDiff} | 並び率:${rate.toFixed(1)}% | ${type}\n`;
   }
 
-  result += `\n===== 総括 =====\n`;
+  result += "\n===== 総括 =====\n";
   result += `単品型: ${single}\n`;
   result += `混合型: ${mix}\n`;
   result += `並び型: ${line}\n`;
 
   document.getElementById("output").textContent = result;
 }
+
 </script>
+
+</body>
+</html>
